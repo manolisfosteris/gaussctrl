@@ -36,7 +36,7 @@ from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, Va
 from nerfstudio.data.datamanagers.full_images_datamanager import FullImageDatamanager, FullImageDatamanagerConfig
 from nerfstudio.plugins.registry_dataparser import DataParserSpecification    
 
-
+print("Hello HPC")
 gaussctrl_method = MethodSpecification(
     config=GaussCtrlTrainerConfig(
         method_name="gaussctrl",
