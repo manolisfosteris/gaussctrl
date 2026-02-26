@@ -42,6 +42,11 @@ from nerfstudio.utils import colormaps
 
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UNet2DConditionModel
 from diffusers.schedulers import DDIMScheduler, DDIMInverseScheduler
+#fosteris change start
+import torchvision
+import os
+#fosteris change end
+
 
 CONSOLE = Console(width=120)
 
