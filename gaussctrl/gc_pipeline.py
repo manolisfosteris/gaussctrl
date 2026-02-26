@@ -167,7 +167,19 @@ class GaussCtrlPipeline(VanillaPipeline):
                         processor=utils.CrossViewAttnProcessor(self_attn_coeff=0,
                         unet_chunk_size=2)) 
         CONSOLE.print("Done Resetting Attention Processor", style="bold blue")
-        
+        #fosteris change 26/02/2026 START, the point is to check the edited images
+        import torchvision
+        import os
+
+        save_dir = "/data/leuven/385/vsc38511/outputs/debug_edited_images"
+        os.makedirs(save_dir, exist_ok=True)
+        for idx, data in enumerate(self.datamanager.train_data):
+            img = data["image"]  # [512 512 3]
+            img = img.permute(2, 0, 1)  # [3 512 512]
+            torchvision.utils.save_image(img, f"{save_dir}/edited_{idx:04d}.png")
+        # fosteris change 26/02/2026 end, the point is to check the edited images
+
+
         print("#############################")
         CONSOLE.print("Start Editing: ", style="bold yellow")
         CONSOLE.print(f"Reference views are {[j+1 for j in self.ref_indices]}", style="bold yellow")
