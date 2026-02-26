@@ -136,6 +136,15 @@ class GaussCtrlModel(SplatfactoModel):
             quats_crop = self.quats
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
+        # Cast to float32 for gsplat compatibility
+        means_crop = means_crop.float()
+        scales_crop = scales_crop.float()
+        quats_crop = quats_crop.float()
+        opacities_crop = opacities_crop.float()
+        colors_crop = colors_crop.float()
+        viewmat = viewmat.float()
+        projmat = projmat.float()
+        print(f"DEBUG: means_crop dtype={means_crop.dtype}, scales_crop dtype={scales_crop.dtype}, viewmat dtype={viewmat.dtype}")
 
         self.xys, depths, self.radii, conics, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
             means_crop,
@@ -216,6 +225,7 @@ class GaussCtrlModel(SplatfactoModel):
         assert camera is not None, "must provide camera to gaussian model"
         self.set_crop(obb_box)
         self.training = False
-        outs = self.get_outputs(camera.to(self.device))
+        with torch.cuda.amp.autocast(enabled=False):
+            outs = self.get_outputs(camera.to(self.device))
         self.training = True
         return outs  # type: ignore
