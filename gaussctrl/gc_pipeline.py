@@ -42,6 +42,11 @@ from nerfstudio.utils import colormaps
 
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UNet2DConditionModel
 from diffusers.schedulers import DDIMScheduler, DDIMInverseScheduler
+#fosteris change start
+import torchvision
+import os
+#fosteris change end
+
 
 CONSOLE = Console(width=120)
 
@@ -167,24 +172,48 @@ class GaussCtrlPipeline(VanillaPipeline):
                         processor=utils.CrossViewAttnProcessor(self_attn_coeff=0,
                         unet_chunk_size=2)) 
         CONSOLE.print("Done Resetting Attention Processor", style="bold blue")
-        
+
         print("#############################")
         CONSOLE.print("Start Editing: ", style="bold yellow")
         CONSOLE.print(f"Reference views are {[j+1 for j in self.ref_indices]}", style="bold yellow")
         print("#############################")
         ref_disparity_list = []
         ref_z0_list = []
+        ref_cameras = []
+        
         for ref_idx in self.ref_indices:
             ref_data = deepcopy(self.datamanager.train_data[ref_idx]) 
             ref_disparity = self.depth2disparity(ref_data['depth_image']) 
             ref_z0 = ref_data['z_0_image']
             ref_disparity_list.append(ref_disparity)
             ref_z0_list.append(ref_z0) 
+            # Get camera for reference view
+            if len(self.datamanager.train_dataset._dataparser_outputs.image_filenames) <= self.config.datamanager.subset_num * self.config.datamanager.sampled_views_every_subset or self.config.datamanager.load_all:
+                ref_cam = self.datamanager.cameras[ref_idx : ref_idx + 1]
+            else:
+                ref_cam = self.datamanager.cameras[ref_idx : ref_idx + 1][0]
+            ref_cameras.append(ref_cam)
             
         ref_disparities = np.concatenate(ref_disparity_list, axis=0)
         ref_z0s = np.concatenate(ref_z0_list, axis=0)
         ref_disparity_torch = torch.from_numpy(ref_disparities.copy()).to(torch.float16).to(self.pipe_device)
         ref_z0_torch = torch.from_numpy(ref_z0s.copy()).to(torch.float16).to(self.pipe_device)
+        
+        # Prepare reference camera matrices
+        K_refs_list = []
+        E_refs_list = []
+        for cam in ref_cameras:
+            K = cam.get_intrinsics_matrices()[0]
+            E = torch.eye(4)
+            E[:3, :4] = cam.camera_to_worlds[0]
+            # Convert Camera-to-World (nerfstudio default) to World-to-Camera (extrinsics)
+            # Actually for projection, we can use camera_to_worlds straight if we invert properly,
+            # but let's pass camera_to_world directly as E and let utils.py invert it
+            K_refs_list.append(K)
+            E_refs_list.append(E)
+            
+        K_refs_torch = torch.stack(K_refs_list).to(self.pipe_device) # [num_refs, 3, 3]
+        E_refs_torch = torch.stack(E_refs_list).to(self.pipe_device) # [num_refs, 4, 4]
 
         # Edit images in chunk
         for idx in range(0, len(self.datamanager.train_data), self.chunk_size): 
@@ -205,6 +234,42 @@ class GaussCtrlPipeline(VanillaPipeline):
 
             disp_ctrl_chunk = torch.concatenate((ref_disparity_torch, disparities_torch), dim=0)
             latents_chunk = torch.concatenate((ref_z0_torch, latents_torch), dim=0)
+            
+            # Prepare target camera matrices and target depth
+            K_targets_list = []
+            E_targets_list = []
+            target_depths_list = []
+            for current_data in chunked_data:
+                target_idx = current_data['image_idx']
+                if len(self.datamanager.train_dataset._dataparser_outputs.image_filenames) <= self.config.datamanager.subset_num * self.config.datamanager.sampled_views_every_subset or self.config.datamanager.load_all:
+                    target_cam = self.datamanager.cameras[target_idx : target_idx + 1]
+                else:
+                    target_cam = self.datamanager.cameras[target_idx : target_idx + 1][0]
+                
+                K = target_cam.get_intrinsics_matrices()[0]
+                E = torch.eye(4)
+                E[:3, :4] = target_cam.camera_to_worlds[0]
+                K_targets_list.append(K)
+                E_targets_list.append(E)
+                
+                # Original depth is [1, 512, 512] numpy
+                d = torch.from_numpy(current_data['depth_image'][0])
+                target_depths_list.append(d)
+                
+            K_targets_torch = torch.stack(K_targets_list).to(self.pipe_device)
+            E_targets_torch = torch.stack(E_targets_list).to(self.pipe_device)
+            target_depths_torch = torch.stack(target_depths_list).to(self.pipe_device)
+            
+            # Inject geometry into the CrossViewAttnProcessors
+            for name, processor in self.pipe.unet.attn_processors.items():
+                if isinstance(processor, utils.CrossViewAttnProcessor):
+                    processor.set_camera_data(
+                        target_depths_torch, 
+                        K_targets_torch, 
+                        E_targets_torch, 
+                        K_refs_torch, 
+                        E_refs_torch
+                    )
             
             chunk_edited = self.pipe(
                                 prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
@@ -232,6 +297,11 @@ class GaussCtrlPipeline(VanillaPipeline):
                     bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None] 
 
                 self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
+                # fosteris change 26/02/2026 START, the point is to check the edited images
+                save_dir = "/data/leuven/385/vsc38511/outputs/debug_edited_images"
+                os.makedirs(save_dir, exist_ok=True)
+                torchvision.utils.save_image(bg_cntrl_edited_image, f"{save_dir}/edited_{global_idx:04d}.png")
+                # fosteris change 26/02/2026 end, the point is to check the edited images
         print("#############################")
         CONSOLE.print("Done Editing", style="bold yellow")
         print("#############################")
