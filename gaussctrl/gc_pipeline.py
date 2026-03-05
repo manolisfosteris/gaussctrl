@@ -153,8 +153,11 @@ class GaussCtrlPipeline(VanillaPipeline):
             if self.config.langsam_obj != "":
                 langsam_obj = self.config.langsam_obj
                 langsam_rgb_pil = Image.fromarray((rendered_rgb.cpu().numpy() * 255).astype(np.uint8))
-                masks, _, _, _ = self.langsam.predict(langsam_rgb_pil, langsam_obj)
-                mask_npy = masks.clone().cpu().numpy()[0] * 1
+                # Fosteris 05/03/2026: new lang_sam API expects lists; passing a bare string causes it to
+                # iterate over characters (e.g. "bear" -> ["b","e","a","r"]), breaking batching.
+                results = self.langsam.predict([langsam_rgb_pil], [langsam_obj])
+                result_masks = results[0]["masks"]  # numpy array, new API returns list[dict]
+                mask_npy = result_masks[0] * 1 if len(result_masks) > 0 else None
 
             if self.config.langsam_obj != "":
                 self.update_datasets(cam_idx, rendered_rgb.cpu(), rendered_depth, latent, mask_npy)
@@ -206,9 +209,8 @@ class GaussCtrlPipeline(VanillaPipeline):
             K = cam.get_intrinsics_matrices()[0]
             E = torch.eye(4)
             E[:3, :4] = cam.camera_to_worlds[0]
-            # Convert Camera-to-World (nerfstudio default) to World-to-Camera (extrinsics)
-            # Actually for projection, we can use camera_to_worlds straight if we invert properly,
-            # but let's pass camera_to_world directly as E and let utils.py invert it
+            # camera_to_worlds is C2W; create_reprojection_mask expects W2C
+            E = torch.linalg.inv(E)
             K_refs_list.append(K)
             E_refs_list.append(E)
             
@@ -249,6 +251,8 @@ class GaussCtrlPipeline(VanillaPipeline):
                 K = target_cam.get_intrinsics_matrices()[0]
                 E = torch.eye(4)
                 E[:3, :4] = target_cam.camera_to_worlds[0]
+                # camera_to_worlds is C2W; create_reprojection_mask expects W2C
+                E = torch.linalg.inv(E)
                 K_targets_list.append(K)
                 E_targets_list.append(E)
                 

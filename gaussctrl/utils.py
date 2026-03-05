@@ -107,7 +107,7 @@ def create_reprojection_mask(
     
     return mask
 
-def compute_attn(attn, query, key, value, video_length, ref_frame_index, attention_mask, epipolar_mask=None):
+def compute_attn(attn, query, key, value, video_length, ref_frame_index, attention_mask, epipolar_mask=None, num_refs=0):
     key_ref_cross = rearrange(key, "(b f) d c -> b f d c", f=video_length)
     key_ref_cross = key_ref_cross[:, ref_frame_index]
     key_ref_cross = rearrange(key_ref_cross, "b f d c -> (b f) d c")
@@ -134,15 +134,22 @@ def compute_attn(attn, query, key, value, video_length, ref_frame_index, attenti
         # Epipolar mask is expected to be [B, N, N] where 1 is valid, 0 is invalid
         # But we need it to match the attention heads shape
         b_heads, seq_q, seq_k = attention_scores.shape
-        b_actual = epipolar_mask.shape[0]
-        num_heads = b_heads // b_actual
-        
-        # Expand mask to match heads
-        # [B, N, N] -> [B, 1, N, N] -> [B, heads, N, N] -> [B*heads, N, N]
-        expanded_mask = epipolar_mask.unsqueeze(1).expand(-1, num_heads, -1, -1).reshape(b_heads, seq_q, seq_k)
-        
+        B = epipolar_mask.shape[0]  # chunk_size (target frames only)
+        # b_heads = 2 * video_length * num_attn_heads  (2 from CFG doubling)
+        num_attn_heads = b_heads // (2 * video_length)
+
+        # Build full mask: ones (no constraint) for ref frames, epipolar mask for target frames
+        full_mask = torch.ones(b_heads, seq_q, seq_k, device=epipolar_mask.device, dtype=epipolar_mask.dtype)
+        for j in range(B):
+            target_frame_idx = num_refs + j
+            for cfg_pass in range(2):
+                batch_idx = cfg_pass * video_length + target_frame_idx
+                head_start = batch_idx * num_attn_heads
+                head_end = head_start + num_attn_heads
+                full_mask[head_start:head_end] = epipolar_mask[j:j+1].expand(num_attn_heads, -1, -1)
+
         # Zero out invalid probabilities and re-normalize
-        attention_scores = attention_scores * expanded_mask
+        attention_scores = attention_scores * full_mask
         attention_scores = attention_scores / (attention_scores.sum(dim=-1, keepdim=True) + 1e-8)
         
     hidden_states_ref_cross = torch.bmm(attention_scores, value_ref_cross) 
@@ -245,9 +252,10 @@ class CrossViewAttnProcessor:
             ref1_frame_index = [1] * video_length
             ref2_frame_index = [2] * video_length
             ref3_frame_index = [3] * video_length
-            
+
             # Epipolar MASK Computation
             mask0 = mask1 = mask2 = mask3 = None
+            num_refs_in_batch = 0
             if self.camera_data is not None:
                 # Calculate mask for the current UNet feature map resolution (e.g. 64x64, 32x32, 16x16)
                 res = int(np.sqrt(key.shape[1])) # e.g. 4096 -> 64
@@ -274,6 +282,7 @@ class CrossViewAttnProcessor:
                     K_refs_scaled[:, 1, 2] *= scale
                     
                     B = downsampled_depth.shape[0]
+                    num_refs_in_batch = video_length - B
                     # Compute masks. `create_reprojection_mask` returns [B, res*res, res*res] of -10000.0 or 0.0
                     # We pass exp(mask) since we modified compute_attn to multiply probabilities.
                     # so 0.0 becomes 1.0 (valid), -10000.0 becomes 0.0 (invalid)
@@ -294,9 +303,9 @@ class CrossViewAttnProcessor:
                         K_refs_scaled[3:4].expand(B, -1, -1), self.E_refs[3:4].expand(B, -1, -1), tolerance=2.0 * scale
                     ))
             
-            hidden_states_ref0 = compute_attn(attn, query, key, value, video_length, ref0_frame_index, attention_mask, mask0)
-            hidden_states_ref1 = compute_attn(attn, query, key, value, video_length, ref1_frame_index, attention_mask, mask1)
-            hidden_states_ref2 = compute_attn(attn, query, key, value, video_length, ref2_frame_index, attention_mask, mask2)
+            hidden_states_ref0 = compute_attn(attn, query, key, value, video_length, ref0_frame_index, attention_mask, mask0, num_refs_in_batch)
+            hidden_states_ref1 = compute_attn(attn, query, key, value, video_length, ref1_frame_index, attention_mask, mask1, num_refs_in_batch)
+            hidden_states_ref2 = compute_attn(attn, query, key, value, video_length, ref2_frame_index, attention_mask, mask2, num_refs_in_batch)
 
             key = rearrange(key, "(b f) d c -> b f d c", f=video_length)
             key = key[:, ref3_frame_index]
@@ -312,10 +321,17 @@ class CrossViewAttnProcessor:
         if not is_cross_attention and mask3 is not None:
             attention_probs = attn.get_attention_scores(query, key, attention_mask)
             b_heads, seq_q, seq_k = attention_probs.shape
-            b_actual = mask3.shape[0]
-            num_heads = b_heads // b_actual
-            expanded_mask = mask3.unsqueeze(1).expand(-1, num_heads, -1, -1).reshape(b_heads, seq_q, seq_k)
-            attention_probs = attention_probs * expanded_mask
+            B = mask3.shape[0]
+            num_attn_heads = b_heads // (2 * video_length)
+            full_mask = torch.ones(b_heads, seq_q, seq_k, device=mask3.device, dtype=mask3.dtype)
+            for j in range(B):
+                target_frame_idx = num_refs_in_batch + j
+                for cfg_pass in range(2):
+                    batch_idx = cfg_pass * video_length + target_frame_idx
+                    head_start = batch_idx * num_attn_heads
+                    head_end = head_start + num_attn_heads
+                    full_mask[head_start:head_end] = mask3[j:j+1].expand(num_attn_heads, -1, -1)
+            attention_probs = attention_probs * full_mask
             attention_probs = attention_probs / (attention_probs.sum(dim=-1, keepdim=True) + 1e-8)
             hidden_states_ref3 = torch.bmm(attention_probs, value)
         else:
