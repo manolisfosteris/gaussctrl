@@ -287,20 +287,20 @@ class CrossViewAttnProcessor:
                     # We pass exp(mask) since we modified compute_attn to multiply probabilities.
                     # so 0.0 becomes 1.0 (valid), -10000.0 becomes 0.0 (invalid)
                     mask0 = torch.exp(create_reprojection_mask(
-                        downsampled_depth, K_target_scaled, self.E_target, 
-                        K_refs_scaled[0:1].expand(B, -1, -1), self.E_refs[0:1].expand(B, -1, -1), tolerance=2.0 * scale
+                        downsampled_depth, K_target_scaled, self.E_target,
+                        K_refs_scaled[0:1].expand(B, -1, -1), self.E_refs[0:1].expand(B, -1, -1), tolerance=2.0
                     ))
                     mask1 = torch.exp(create_reprojection_mask(
-                        downsampled_depth, K_target_scaled, self.E_target, 
-                        K_refs_scaled[1:2].expand(B, -1, -1), self.E_refs[1:2].expand(B, -1, -1), tolerance=2.0 * scale
+                        downsampled_depth, K_target_scaled, self.E_target,
+                        K_refs_scaled[1:2].expand(B, -1, -1), self.E_refs[1:2].expand(B, -1, -1), tolerance=2.0
                     ))
                     mask2 = torch.exp(create_reprojection_mask(
-                        downsampled_depth, K_target_scaled, self.E_target, 
-                        K_refs_scaled[2:3].expand(B, -1, -1), self.E_refs[2:3].expand(B, -1, -1), tolerance=2.0 * scale
+                        downsampled_depth, K_target_scaled, self.E_target,
+                        K_refs_scaled[2:3].expand(B, -1, -1), self.E_refs[2:3].expand(B, -1, -1), tolerance=2.0
                     ))
                     mask3 = torch.exp(create_reprojection_mask(
-                        downsampled_depth, K_target_scaled, self.E_target, 
-                        K_refs_scaled[3:4].expand(B, -1, -1), self.E_refs[3:4].expand(B, -1, -1), tolerance=2.0 * scale
+                        downsampled_depth, K_target_scaled, self.E_target,
+                        K_refs_scaled[3:4].expand(B, -1, -1), self.E_refs[3:4].expand(B, -1, -1), tolerance=2.0
                     ))
             
             hidden_states_ref0 = compute_attn(attn, query, key, value, video_length, ref0_frame_index, attention_mask, mask0, num_refs_in_batch)

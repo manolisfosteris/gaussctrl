@@ -275,7 +275,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                         E_refs_torch
                     )
             
-            chunk_edited = self.pipe(
+            all_edited = self.pipe(
                                 prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
                                 negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
                                 latents=latents_chunk,
@@ -285,8 +285,16 @@ class GaussCtrlPipeline(VanillaPipeline):
                                 controlnet_conditioning_scale=self.controlnet_conditioning_scale,
                                 eta=self.eta,
                                 output_type='pt',
-                            ).images[self.num_ref_views:]
-            chunk_edited = chunk_edited.cpu() 
+                            ).images
+            # fosteris change 07/03/2026 START, save edited reference views for debugging
+            if idx == 0:
+                save_dir = f"/data/leuven/385/vsc38511/outputs/debug_edited_images/{self.experiment_name}"
+                os.makedirs(save_dir, exist_ok=True)
+                for ref_local_idx, ref_edited in enumerate(all_edited[:self.num_ref_views].cpu()):
+                    ref_global_idx = self.ref_indices[ref_local_idx]
+                    torchvision.utils.save_image(ref_edited, f"{save_dir}/ref_edited_{ref_global_idx:04d}.png")
+            # fosteris change 07/03/2026 END
+            chunk_edited = all_edited[self.num_ref_views:].cpu()
 
             # Insert edited images back to train data for training
             for local_idx, edited_image in enumerate(chunk_edited):
@@ -298,11 +306,11 @@ class GaussCtrlPipeline(VanillaPipeline):
                     bg_mask = 1 - mask
 
                     unedited_image = unedited_images[local_idx].permute(2,0,1)
-                    bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None] 
+                    bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None]
 
                 self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
                 # fosteris change 26/02/2026 START, the point is to check the edited images
-                save_dir = "/data/leuven/385/vsc38511/outputs/debug_edited_images"
+                save_dir = f"/data/leuven/385/vsc38511/outputs/debug_edited_images/{self.experiment_name}"
                 os.makedirs(save_dir, exist_ok=True)
                 torchvision.utils.save_image(bg_cntrl_edited_image, f"{save_dir}/edited_{global_idx:04d}.png")
                 # fosteris change 26/02/2026 end, the point is to check the edited images
